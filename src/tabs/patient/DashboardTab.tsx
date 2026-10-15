@@ -10,6 +10,7 @@ import { t } from '../../lib/i18n';
 import { greetKey } from '../../lib/format';
 import { fmtD, todayStr, schedTimeFromDosage, queueNumberOf, rupees } from '../../lib/format';
 import { ActivityStreakCard } from './ActivityTab';
+import DemoHealthTrendsPreview from '../../components/patient/DemoHealthTrendsPreview';
 
 /** Patient dashboard — modern SaaS & AI-friendly clinical experience. */
 export default function DashboardTab({ me, go }: { me: MhdUser; go: (tab: string) => void }) {
@@ -284,6 +285,9 @@ export default function DashboardTab({ me, go }: { me: MhdUser; go: (tab: string
           </div>
         ))}
       </div>
+
+      {/* Demo Health Trends Preview */}
+      <DemoHealthTrendsPreview onOpenFull={() => go(t('tracking'))} />
 
       {/* Mini lists */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-5">

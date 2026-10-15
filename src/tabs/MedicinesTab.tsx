@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Pill, Loader2, Globe2 } from 'lucide-react';
+import { Pill, Loader2, Globe2, TrendingUp, ChevronDown, ChevronUp, Clock, ShieldAlert } from 'lucide-react';
 import { addDoc, collection, doc, updateDoc, getDocs, query, limit } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { MhdUser, Medicine, ReportDoc, CaseDoc } from '../lib/types';
@@ -9,12 +9,15 @@ import { bind } from './bind';
 import { PageHeader, Loading, EmptyState, StatusChip, inputCls, labelCls, btnPrimary, FilterPills } from './common';
 import AiLabAnalysisModal from '../components/AiLabAnalysisModal';
 import type { LabAnalysisResult } from '../server/geminiLabAnalyzer';
+import HealthTrendsChart from '../components/HealthTrendsChart';
+import { DEMO_MEDICINE_PROFILES } from '../lib/demoHealthData';
 
 export default function MedicinesTab({ patientData }: { patientData: MhdUser }) {
   const [meds, setMeds] = useState<Medicine[] | null>(null);
   const [filter, setFilter] = useState('All');
   const [f, setF] = useState({ name: '', dosage: '', startDate: todayStr(), durationDays: '' });
   const [busy, setBusy] = useState(false);
+  const [showDemoGraphs, setShowDemoGraphs] = useState(false);
 
   // AI Analytics state
   const [aiModalOpen, setAiModalOpen] = useState(false);
@@ -152,6 +155,84 @@ export default function MedicinesTab({ patientData }: { patientData: MhdUser }) 
       </form>
 
       <FilterPills filters={['All', 'Active', 'Stopped']} value={filter} onChange={setFilter} />
+
+      {/* Demo Medicine Treatment Timelines & Health Trends Accordion */}
+      <div className="bg-surface border border-line rounded-xl sm:rounded-2xl p-4 sm:p-5 shadow-xs space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-blue-50 text-[#2a8eff] rounded-xl">
+              <TrendingUp className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm sm:text-base font-bold text-[#1e3a8a]">
+                  Medicine Treatment Timelines & Health Response Graphs
+                </h3>
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-amber-900 bg-amber-100 px-2 py-0.5 rounded border border-amber-300 font-mono">
+                  DEMO DATA
+                </span>
+              </div>
+              <p className="text-xs text-muted">
+                Separate interactive charts for each medication displaying treatment timelines, dosage milestones, and biomarker response.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowDemoGraphs(!showDemoGraphs)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-[#1e3a8a] text-xs font-bold rounded-xl transition-all cursor-pointer self-start sm:self-auto shrink-0"
+          >
+            <span>{showDemoGraphs ? 'Hide Demo Graphs' : 'View Demo Graphs (3 Medicines)'}</span>
+            {showDemoGraphs ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </button>
+        </div>
+
+        {showDemoGraphs && (
+          <div className="space-y-4 pt-3 border-t border-line">
+            <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2">
+              <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <p>
+                <strong>DEMO DATA:</strong> Realistic simulated clinical response curves for Metformin HCl, Atorvastatin, and Amlodipine.
+                No real patient records or databases are altered.
+              </p>
+            </div>
+
+            {DEMO_MEDICINE_PROFILES.map((medProfile) => (
+              <div key={medProfile.id} className="p-3.5 sm:p-5 bg-slate-50/70 rounded-xl border border-slate-200 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-200/80">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Pill className="w-4 h-4 text-[#2a8eff]" />
+                    <span className="text-sm sm:text-base font-bold text-[#1e3a8a]">{medProfile.name} ({medProfile.dosage})</span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                      {medProfile.efficacySummary.clinicalStatus}
+                    </span>
+                  </div>
+                  <span className="text-xs text-slate-500 font-medium">Started: {fmtD(medProfile.startDate)}</span>
+                </div>
+
+                <HealthTrendsChart
+                  title={medProfile.correlatedBiomarker.title}
+                  subtitle={medProfile.correlatedBiomarker.subtitle}
+                  data={medProfile.correlatedBiomarker.data}
+                  referenceRange={medProfile.correlatedBiomarker.referenceRange}
+                  unit={medProfile.correlatedBiomarker.unit}
+                  color={medProfile.correlatedBiomarker.color}
+                  isDemoData={true}
+                  milestones={medProfile.milestones}
+                  medicineTimeline={{
+                    name: medProfile.name,
+                    dosage: medProfile.dosage,
+                    startDate: medProfile.startDate,
+                    active: medProfile.active,
+                    history: medProfile.history,
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {list.length === 0 ? (
         <EmptyState icon={<Pill className="w-8 h-8 text-ghost mx-auto" strokeWidth={1.5} />} title="No medicines here" sub="Add one above — a doctor will verify it." />

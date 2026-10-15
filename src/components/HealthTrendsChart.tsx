@@ -47,6 +47,13 @@ interface HealthTrendsChartProps {
   color?: string; // Hex color e.g. '#2a8eff'
   unit: string;
   milestones?: MedicineMilestone[];
+  isDemoData?: boolean;
+  primaryLabel?: string;
+  secondaryData?: DataPoint[];
+  secondaryColor?: string;
+  secondaryLabel?: string;
+  secondaryUnit?: string;
+  secondaryReferenceRange?: ReferenceRange;
   medicineTimeline?: {
     name: string;
     dosage: string;
@@ -67,15 +74,22 @@ export default function HealthTrendsChart({
   color = '#2a8eff',
   unit,
   milestones = [],
+  isDemoData = false,
+  primaryLabel,
+  secondaryData = [],
+  secondaryColor = '#06b6d4',
+  secondaryLabel,
+  secondaryUnit,
+  secondaryReferenceRange,
   medicineTimeline,
 }: HealthTrendsChartProps) {
   const [filter, setFilter] = useState<DateFilter>('all');
-  const [hoveredPoint, setHoveredPoint] = useState<DataPoint | null>(null);
+  const [hoveredPoint, setHoveredPoint] = useState<(DataPoint & { seriesLabel?: string }) | null>(null);
 
   // Filter data points by selected date window
-  const filteredData = useMemo(() => {
-    if (!data.length) return [];
-    const sorted = [...data].sort((a, b) => a.timestamp - b.timestamp);
+  const filterList = (list: DataPoint[]) => {
+    if (!list.length) return [];
+    const sorted = [...list].sort((a, b) => a.timestamp - b.timestamp);
     if (filter === 'all') return sorted;
 
     const latestTime = sorted[sorted.length - 1].timestamp;
@@ -90,7 +104,10 @@ export default function HealthTrendsChart({
 
     const cutoff = cutoffMap[filter];
     return sorted.filter((d) => d.timestamp >= cutoff);
-  }, [data, filter]);
+  };
+
+  const filteredData = useMemo(() => filterList(data), [data, filter]);
+  const filteredSecondaryData = useMemo(() => filterList(secondaryData), [secondaryData, filter]);
 
   // Metric stats
   const stats = useMemo(() => {
@@ -129,18 +146,22 @@ export default function HealthTrendsChart({
   const usableHeight = chartHeight - padding.top - padding.bottom;
 
   const { minVal, maxVal, minTime, maxTime } = useMemo(() => {
-    if (!filteredData.length) {
+    const combinedData = [...filteredData, ...filteredSecondaryData];
+    if (!combinedData.length) {
       return { minVal: 0, maxVal: 100, minTime: 0, maxTime: 1 };
     }
-    const vals = filteredData.map((d) => d.value);
+    const vals = combinedData.map((d) => d.value);
     if (referenceRange) {
       vals.push(referenceRange.min, referenceRange.max);
+    }
+    if (secondaryReferenceRange) {
+      vals.push(secondaryReferenceRange.min, secondaryReferenceRange.max);
     }
     const rawMin = Math.min(...vals);
     const rawMax = Math.max(...vals);
     const buffer = (rawMax - rawMin) * 0.15 || 5;
 
-    const times = filteredData.map((d) => d.timestamp);
+    const times = combinedData.map((d) => d.timestamp);
     const tMin = Math.min(...times);
     const tMax = Math.max(...times);
 
@@ -150,7 +171,7 @@ export default function HealthTrendsChart({
       minTime: tMin,
       maxTime: tMax === tMin ? tMin + 86400000 : tMax,
     };
-  }, [filteredData, referenceRange]);
+  }, [filteredData, filteredSecondaryData, referenceRange, secondaryReferenceRange]);
 
   const getX = (timestamp: number) => {
     if (maxTime === minTime) return padding.left + usableWidth / 2;
@@ -162,16 +183,15 @@ export default function HealthTrendsChart({
     return padding.top + usableHeight - ((val - minVal) / (maxVal - minVal)) * usableHeight;
   };
 
-  // Generate smooth SVG curve path
-  const linePath = useMemo(() => {
-    if (!filteredData.length) return '';
-    if (filteredData.length === 1) {
-      const x = getX(filteredData[0].timestamp);
-      const y = getY(filteredData[0].value);
+  const makeCurvePath = (list: DataPoint[]) => {
+    if (!list.length) return '';
+    if (list.length === 1) {
+      const x = getX(list[0].timestamp);
+      const y = getY(list[0].value);
       return `M ${x - 5} ${y} L ${x + 5} ${y}`;
     }
 
-    const points = filteredData.map((d) => [getX(d.timestamp), getY(d.value)]);
+    const points = list.map((d) => [getX(d.timestamp), getY(d.value)]);
     let path = `M ${points[0][0]} ${points[0][1]}`;
 
     for (let i = 0; i < points.length - 1; i++) {
@@ -188,7 +208,13 @@ export default function HealthTrendsChart({
       path += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2[0]} ${p2[1]}`;
     }
     return path;
-  }, [filteredData, minVal, maxVal, minTime, maxTime]);
+  };
+
+  // Generate smooth SVG curve path for primary series
+  const linePath = useMemo(() => makeCurvePath(filteredData), [filteredData, minVal, maxVal, minTime, maxTime]);
+
+  // Generate smooth SVG curve path for secondary series
+  const secondaryLinePath = useMemo(() => makeCurvePath(filteredSecondaryData), [filteredSecondaryData, minVal, maxVal, minTime, maxTime]);
 
   const areaPath = useMemo(() => {
     if (!filteredData.length || filteredData.length === 1) return '';
@@ -199,9 +225,10 @@ export default function HealthTrendsChart({
   }, [linePath, filteredData]);
 
   // Check if a point is within healthy reference boundaries
-  const isHealthy = (val: number) => {
-    if (!referenceRange) return true;
-    return val >= referenceRange.min && val <= referenceRange.max;
+  const isHealthy = (val: number, ref?: ReferenceRange) => {
+    const r = ref || referenceRange;
+    if (!r) return true;
+    return val >= r.min && val <= r.max;
   };
 
   return (
@@ -209,19 +236,43 @@ export default function HealthTrendsChart({
       {/* Top Header & Filter Controls */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <h3 className="text-base sm:text-lg font-bold text-[#1e3a8a]">{title}</h3>
+            {isDemoData && (
+              <span className="inline-flex items-center gap-1 text-[10.5px] font-bold uppercase tracking-wider text-amber-900 bg-amber-100 px-2.5 py-0.5 rounded-md border border-amber-300 font-mono shadow-2xs">
+                DEMO DATA
+              </span>
+            )}
             {referenceRange && (
               <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-0.5 rounded-full border border-emerald-200">
                 Target: {referenceRange.min} – {referenceRange.max} {referenceRange.unit}
+              </span>
+            )}
+            {secondaryReferenceRange && secondaryLabel && (
+              <span className="text-[11px] font-semibold text-sky-700 bg-sky-50 px-2.5 py-0.5 rounded-full border border-sky-200">
+                {secondaryLabel} Target: {secondaryReferenceRange.min} – {secondaryReferenceRange.max} {secondaryReferenceRange.unit}
               </span>
             )}
           </div>
           {subtitle && <p className="text-xs text-slate-500 mt-0.5">{subtitle}</p>}
         </div>
 
-        {/* Date Filter Pills */}
-        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl self-start sm:self-auto">
+        {/* Date Filter Controls & Legend */}
+        <div className="flex items-center gap-2 flex-wrap self-start sm:self-auto">
+          {filteredSecondaryData.length > 0 && (
+            <div className="hidden sm:flex items-center gap-3 text-xs font-semibold px-2 py-1 bg-slate-50 rounded-lg border border-slate-200/70">
+              <div className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+                <span className="text-slate-700">{primaryLabel || 'Systolic'}</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: secondaryColor }} />
+                <span className="text-slate-700">{secondaryLabel || 'Diastolic'}</span>
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
           {(
             [
               ['all', 'All Time'],
@@ -243,6 +294,7 @@ export default function HealthTrendsChart({
               {label}
             </button>
           ))}
+          </div>
         </div>
       </div>
 
@@ -481,18 +533,30 @@ export default function HealthTrendsChart({
               />
             )}
 
-            {/* Data Points */}
+            {/* Secondary Trend Line (e.g. Diastolic BP) */}
+            {secondaryLinePath && (
+              <path
+                d={secondaryLinePath}
+                fill="none"
+                stroke={secondaryColor}
+                strokeWidth="2.2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            )}
+
+            {/* Primary Series Data Points */}
             {filteredData.map((d, i) => {
               const cx = getX(d.timestamp);
               const cy = getY(d.value);
-              const healthy = isHealthy(d.value);
-              const isHovered = hoveredPoint?.timestamp === d.timestamp;
+              const healthy = isHealthy(d.value, referenceRange);
+              const isHovered = hoveredPoint?.timestamp === d.timestamp && (!hoveredPoint?.seriesLabel || hoveredPoint?.seriesLabel === (primaryLabel || title));
 
               return (
                 <g
-                  key={i}
+                  key={`primary-${i}`}
                   className="cursor-pointer"
-                  onMouseEnter={() => setHoveredPoint(d)}
+                  onMouseEnter={() => setHoveredPoint({ ...d, seriesLabel: primaryLabel || title })}
                   onMouseLeave={() => setHoveredPoint(null)}
                 >
                   <circle
@@ -500,6 +564,35 @@ export default function HealthTrendsChart({
                     cy={cy}
                     r={isHovered ? 7 : 4}
                     fill={healthy ? '#10b981' : '#f59e0b'}
+                    stroke="#ffffff"
+                    strokeWidth={isHovered ? 2.5 : 1.8}
+                    className="transition-all duration-150"
+                  />
+                  {/* Invisible hit target for smooth mobile touch & mouse interaction */}
+                  <circle cx={cx} cy={cy} r="16" fill="transparent" />
+                </g>
+              );
+            })}
+
+            {/* Secondary Series Data Points (e.g. Diastolic BP) */}
+            {filteredSecondaryData.map((d, i) => {
+              const cx = getX(d.timestamp);
+              const cy = getY(d.value);
+              const healthy = isHealthy(d.value, secondaryReferenceRange);
+              const isHovered = hoveredPoint?.timestamp === d.timestamp && hoveredPoint?.seriesLabel === (secondaryLabel || 'Secondary');
+
+              return (
+                <g
+                  key={`secondary-${i}`}
+                  className="cursor-pointer"
+                  onMouseEnter={() => setHoveredPoint({ ...d, seriesLabel: secondaryLabel || 'Secondary' })}
+                  onMouseLeave={() => setHoveredPoint(null)}
+                >
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={isHovered ? 7 : 4}
+                    fill={secondaryColor}
                     stroke="#ffffff"
                     strokeWidth={isHovered ? 2.5 : 1.8}
                     className="transition-all duration-150"
@@ -538,32 +631,50 @@ export default function HealthTrendsChart({
             <div
               className="absolute pointer-events-none z-20 bg-slate-900/95 text-white p-2.5 rounded-xl shadow-xl text-xs space-y-1 transition-all -translate-x-1/2 -translate-y-full border border-slate-700/60"
               style={{
-                left: `${(getX(hoveredPoint.timestamp) / chartWidth) * 100}%`,
-                top: `${(getY(hoveredPoint.value) / chartHeight) * 100 - 8}%`,
+                left: `${Math.min(92, Math.max(8, (getX(hoveredPoint.timestamp) / chartWidth) * 100))}%`,
+                top: `${Math.max(10, (getY(hoveredPoint.value) / chartHeight) * 100 - 8)}%`,
               }}
             >
               <div className="flex items-center justify-between gap-3 text-[11px] text-slate-300">
-                <span>{fmtD(hoveredPoint.date)}</span>
-                <span
-                  className={`px-1.5 py-0.2 rounded-md font-bold text-[9.5px] ${
-                    isHealthy(hoveredPoint.value)
-                      ? 'bg-emerald-500/20 text-emerald-300'
-                      : 'bg-amber-500/20 text-amber-300'
-                  }`}
-                >
-                  {isHealthy(hoveredPoint.value) ? 'In Target' : 'Out of Target'}
-                </span>
+                <span className="font-semibold">{fmtD(hoveredPoint.date)}</span>
+                <div className="flex items-center gap-1.5">
+                  {isDemoData && (
+                    <span className="px-1.5 py-0.2 rounded font-mono font-bold text-[9px] bg-amber-400/20 text-amber-300 border border-amber-500/40">
+                      DEMO
+                    </span>
+                  )}
+                  <span
+                    className={`px-1.5 py-0.2 rounded-md font-bold text-[9.5px] ${
+                      isHealthy(hoveredPoint.value, hoveredPoint.seriesLabel === secondaryLabel ? secondaryReferenceRange : referenceRange)
+                        ? 'bg-emerald-500/20 text-emerald-300'
+                        : 'bg-amber-500/20 text-amber-300'
+                    }`}
+                  >
+                    {isHealthy(hoveredPoint.value, hoveredPoint.seriesLabel === secondaryLabel ? secondaryReferenceRange : referenceRange) ? 'In Target' : 'Out of Target'}
+                  </span>
+                </div>
               </div>
-              <p className="text-sm font-bold text-white">
-                {hoveredPoint.value} {unit}
-              </p>
-              {referenceRange && (
-                <p className="text-[10px] text-slate-400">
-                  Target: {referenceRange.min} – {referenceRange.max} {unit}
+
+              {hoveredPoint.seriesLabel && (
+                <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">
+                  {hoveredPoint.seriesLabel}
                 </p>
               )}
+
+              <p className="text-sm font-bold text-white">
+                {hoveredPoint.value} {hoveredPoint.seriesLabel === secondaryLabel && secondaryUnit ? secondaryUnit : unit}
+              </p>
+
+              {referenceRange && (
+                <p className="text-[10px] text-slate-400">
+                  Target: {hoveredPoint.seriesLabel === secondaryLabel && secondaryReferenceRange
+                    ? `${secondaryReferenceRange.min} – ${secondaryReferenceRange.max} ${secondaryReferenceRange.unit}`
+                    : `${referenceRange.min} – ${referenceRange.max} ${referenceRange.unit}`}
+                </p>
+              )}
+
               {hoveredPoint.note && (
-                <p className="text-[10.5px] text-slate-300 border-t border-slate-700/80 pt-1 mt-1 max-w-[200px] truncate">
+                <p className="text-[10.5px] text-slate-300 border-t border-slate-700/80 pt-1 mt-1 max-w-[220px] leading-snug">
                   {hoveredPoint.note}
                 </p>
               )}
@@ -572,15 +683,25 @@ export default function HealthTrendsChart({
         </div>
       )}
 
-      {/* Causation Warning Note */}
-      <div className="flex items-start gap-2 p-2.5 bg-slate-50 rounded-xl text-[11px] text-slate-500 border border-slate-200/60">
-        <ShieldAlert className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-        <p className="leading-relaxed">
-          <strong>Clinical Caution:</strong> Laboratory measurements vary naturally with diet, activity,
-          hydration, and lifestyle. A medication cannot be confirmed as the sole cause of a trend without
-          clinical review by your physician.
-        </p>
-      </div>
+      {/* Causation Warning Note / Demo Data Notice */}
+      {isDemoData ? (
+        <div className="flex items-start gap-2.5 p-3 bg-amber-50/80 rounded-xl text-[11px] text-amber-900 border border-amber-200/90 shadow-2xs">
+          <ShieldAlert className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+          <p className="leading-relaxed">
+            <strong className="text-amber-950 font-bold">DEMO DATA NOTICE:</strong> This chart displays a realistic, simulated clinical trajectory for patient portal demonstration only.
+            Real patient records are untouched. No writes or modifications were made to Firebase, MongoDB, or real user records.
+          </p>
+        </div>
+      ) : (
+        <div className="flex items-start gap-2 p-2.5 bg-slate-50 rounded-xl text-[11px] text-slate-500 border border-slate-200/60">
+          <ShieldAlert className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+          <p className="leading-relaxed">
+            <strong>Clinical Caution:</strong> Laboratory measurements vary naturally with diet, activity,
+            hydration, and lifestyle. A medication cannot be confirmed as the sole cause of a trend without
+            clinical review by your physician.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

@@ -1288,7 +1288,7 @@ INSTRUCTIONS & CLINICAL ANALYTICS REQUIREMENTS:
           "drugClass": "Drug Class",
           "globalSuccessProbability": 82.5,
           "relativeEfficacyNotes": "Efficacy and risk comparison notes",
-          "whyCurrentChoiceIsOptimal: "Clinical rationale why prescribed drug is optimal for patient"
+          "whyCurrentChoiceIsOptimal": "Clinical rationale why prescribed drug is optimal for patient"
         }
       ],
       "pharmacovigilanceAlerts": [
@@ -1350,7 +1350,7 @@ INSTRUCTIONS & CLINICAL ANALYTICS REQUIREMENTS:
 `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
+      model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
         systemInstruction: `You are an expert clinical lab scientist, global pharmacovigilance researcher, and patient health educator with access to worldwide de-identified patient registries (WHO VigiBase, FDA FAERS, EMA EudraVigilance, GHDx).

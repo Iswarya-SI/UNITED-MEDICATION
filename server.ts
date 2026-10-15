@@ -13,36 +13,27 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 // Disable buffering so queries fail-fast if DB connection is unavailable
 mongoose.set('bufferCommands', false);
 
-function getMongoUri(): string {
-  let uri = process.env.MONGODB_URI || '';
-  if (!uri || uri.includes('<db_password>') || uri.includes(':db_password@')) {
-    uri = 'mongodb+srv://jpavan2244_db_user:Ishuthemonkey@genomefirewall.wmieqra.mongodb.net/?retryWrites=true&w=majority';
-  }
-  // Automatically strip wrapping angle brackets around password if present
-  return uri.replace(/:<([^>@]+)>@/, ':$1@');
-}
-
-const MONGODB_URI = getMongoUri();
+const MONGODB_URI = process.env.MONGODB_URI || '';
 
 let lastError: string | null = null;
 let isConnected = false;
 
 async function connectToMongo() {
-  if (!MONGODB_URI || MONGODB_URI.includes('<db_password>')) {
-    console.log('ℹ️ MONGODB_URI is not fully configured.');
+  if (!MONGODB_URI) {
+    console.warn('[AI Studio] MONGODB_URI not configured — database offline, mock mode active');
     return;
   }
   try {
     await mongoose.connect(MONGODB_URI, {
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 2000,
     });
     isConnected = true;
     lastError = null;
-    console.log('✅ Connected to MongoDB Atlas successfully.');
+    console.log('✅ Connected to MongoDB successfully.');
   } catch (err) {
     isConnected = false;
     lastError = err instanceof Error ? err.message : String(err);
-    console.warn('⚠️ MongoDB Atlas connection notice:', lastError);
+    console.warn('⚠️ MongoDB connection notice:', lastError);
   }
 }
 
@@ -111,9 +102,7 @@ app.get(['/api/health', '/api/db-health'], async (_req, res) => {
         operational: true,
       },
       mongodb: {
-        type: 'MongoDB Atlas',
-        cluster: 'genomefirewall.wmieqra.mongodb.net',
-        networkReachable: true,
+        type: 'MongoDB',
         configured: Boolean(MONGODB_URI),
         state: stateString,
         readyState: stateNumber,
@@ -121,17 +110,35 @@ app.get(['/api/health', '/api/db-health'], async (_req, res) => {
         requiresIpAccessListConfig: isIpWhitelistError,
         message:
           stateNumber === 1 || isConnected
-            ? 'Connected to MongoDB Atlas successfully'
+            ? 'Connected to MongoDB successfully'
             : isIpWhitelistError
             ? 'Atlas IP Access List required: Please add 0.0.0.0/0 in MongoDB Atlas -> Security -> Network Access'
-            : lastError || 'Disconnected',
+            : lastError || (MONGODB_URI ? 'Disconnected' : 'MongoDB URI not set (mock/demo mode active)'),
         instructions: isIpWhitelistError
-          ? 'Log into MongoDB Atlas -> Network Access (left menu) -> Add IP Address -> Choose "Allow Access from Anywhere" (0.0.0.0/0) -> Confirm. Once saved, refresh this endpoint!'
+          ? 'Log into MongoDB Atlas -> Network Access (left menu) -> Add IP Address -> Choose "Allow Access from Anywhere" (0.0.0.0/0) -> Confirm.'
           : null,
         lastError: lastError,
       },
     },
   });
+});
+
+// Database offline error middleware: gracefully handle Mongoose errors
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (
+    err?.name === 'MongooseError' ||
+    err?.name === 'MongoNetworkError' ||
+    (typeof err?.message === 'string' && err.message.includes('buffering timed out'))
+  ) {
+    console.warn('[AI Studio] Database offline — returning mock empty response');
+    if (req.method === 'GET') {
+      res.json(req.path.endsWith('s') || req.path.endsWith('s/') ? [] : {});
+      return;
+    }
+    res.status(503).json({ error: 'Service temporarily unavailable (database offline)' });
+    return;
+  }
+  next(err);
 });
 
 async function startServer() {

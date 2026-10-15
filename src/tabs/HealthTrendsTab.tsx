@@ -1,22 +1,23 @@
 import { useEffect, useState, useMemo } from 'react';
 import {
   Activity,
-  Sparkles,
   Pill,
   TrendingUp,
   FileText,
   Calendar,
   AlertCircle,
-  PlusCircle,
   Stethoscope,
   Info,
   ShieldCheck,
-  RefreshCw,
+  ShieldAlert,
   Layers,
   Heart,
-  Globe2
+  Globe2,
+  CheckCircle2,
+  Clock,
+  ExternalLink
 } from 'lucide-react';
-import { addDoc, collection, getDocs, query, limit } from 'firebase/firestore';
+import { collection, getDocs, query, limit } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { MhdUser, ReportDoc, Medicine, VitalsDoc, CaseDoc } from '../lib/types';
 import { todayStr, fmtD } from '../lib/format';
@@ -26,6 +27,17 @@ import HealthTrendsChart, { type DataPoint, type ReferenceRange, type MedicineMi
 import AiLabAnalysisModal from '../components/AiLabAnalysisModal';
 import type { LabAnalysisResult } from '../server/geminiLabAnalyzer';
 import { toast } from '../components/Toaster';
+import {
+  DEMO_GLUCOSE_DATA,
+  DEMO_HBA1C_DATA,
+  DEMO_SYS_BP_DATA,
+  DEMO_DIA_BP_DATA,
+  DEMO_CHOLESTEROL_DATA,
+  DEMO_TRIGLYCERIDES_DATA,
+  DEMO_CREATININE_DATA,
+  DEMO_MEDICINE_PROFILES,
+  DEMO_VITALS_LOG,
+} from '../lib/demoHealthData';
 
 export default function HealthTrendsTab({ patientData }: { patientData: MhdUser }) {
   const [reports, setReports] = useState<ReportDoc[] | null>(null);
@@ -33,20 +45,25 @@ export default function HealthTrendsTab({ patientData }: { patientData: MhdUser 
   const [vitals, setVitals] = useState<VitalsDoc[] | null>(null);
   const [cases, setCases] = useState<CaseDoc[] | null>(null);
 
+  // Active view: Biomarkers vs Medicine-wise vs Vitals Log
   const [activeView, setActiveView] = useState<'biomarkers' | 'meds' | 'vitals'>('biomarkers');
+
+  // Data source mode: 'demo' (realistic in-memory graphs) vs 'live' (personal patient records)
+  const [dataSource, setDataSource] = useState<'demo' | 'live'>('demo');
+
+  // AI Modal
   const [aiModalOpen, setAiModalOpen] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<LabAnalysisResult | null>(null);
-  const [seeding, setSeeding] = useState(false);
 
-  // Bind real-time data from Firestore
+  // Bind real-time data from Firestore for live mode
   useEffect(() => bind<ReportDoc>('reports', [['patientId', '==', patientData.id]], setReports), [patientData.id]);
   useEffect(() => bind<Medicine>('medicines', [['patientId', '==', patientData.id]], setMedicines), [patientData.id]);
   useEffect(() => bind<VitalsDoc>('vitals', [['patientId', '==', patientData.id]], setVitals), [patientData.id]);
   useEffect(() => bind<CaseDoc>('cases', [['patientId', '==', patientData.id]], setCases), [patientData.id]);
 
   // Extract structured biomarker time-series from actual reports & vitals
-  const biomarkerSeries = useMemo(() => {
+  const liveBiomarkerSeries = useMemo(() => {
     const glucosePts: DataPoint[] = [];
     const hba1cPts: DataPoint[] = [];
     const sysBpPts: DataPoint[] = [];
@@ -56,7 +73,7 @@ export default function HealthTrendsTab({ patientData }: { patientData: MhdUser 
     const creatPts: DataPoint[] = [];
     const hemoPts: DataPoint[] = [];
 
-    // 1. Parse from Lab Reports notes and summaries
+    // Parse from Lab Reports notes and summaries
     (reports || []).forEach((rep) => {
       const text = `${rep.title} ${rep.note || ''} ${rep.summary || ''}`.toLowerCase();
       const dateStr = rep.date || todayStr();
@@ -141,7 +158,7 @@ export default function HealthTrendsTab({ patientData }: { patientData: MhdUser 
       }
     });
 
-    // 2. Parse from clinical Vitals recorded by doctors
+    // Parse from clinical Vitals recorded by doctors
     (vitals || []).forEach((vit) => {
       const dateStr = vit.date || todayStr();
       const timestamp = new Date(dateStr).getTime() || vit.createdAt || Date.now();
@@ -183,23 +200,11 @@ export default function HealthTrendsTab({ patientData }: { patientData: MhdUser 
     };
   }, [reports, vitals]);
 
-  // Extract medicine milestone markers
-  const medicineMilestones = useMemo(() => {
-    const milestones: MedicineMilestone[] = [];
-    (medicines || []).forEach((m) => {
-      if (m.startDate) {
-        milestones.push({
-          date: m.startDate,
-          timestamp: new Date(m.startDate).getTime() || m.createdAt,
-          medicineName: m.name,
-          dosage: m.dosage,
-          type: 'started',
-          note: `Started ${m.name} (${m.dosage})`,
-        });
-      }
-    });
-    return milestones;
-  }, [medicines]);
+  const hasLiveBiomarkers =
+    liveBiomarkerSeries.glucose.length > 0 ||
+    liveBiomarkerSeries.hba1c.length > 0 ||
+    liveBiomarkerSeries.sysBp.length > 0 ||
+    liveBiomarkerSeries.cholesterol.length > 0;
 
   // Run AI analysis with full prescription and laboratory correlation
   const handleRunAiAnalysis = async () => {
@@ -222,12 +227,92 @@ export default function HealthTrendsTab({ patientData }: { patientData: MhdUser 
         /* fallback to cohort model */
       }
 
+      // If in demo mode or live data is empty, supply rich simulated demo cases/meds/reports
+      const targetReports = dataSource === 'demo' || (reports || []).length === 0
+        ? [
+            {
+              id: 'rep-demo-1',
+              patientId: patientData.id,
+              title: 'Baseline Comprehensive Metabolic Panel',
+              type: 'Lab Report',
+              date: '2025-11-10',
+              hospital: 'MHD Central Multispecialty Hospital',
+              doctor: 'Dr. Sarah Jenkins, MD',
+              note: 'Fasting Glucose: 172 mg/dL (Elevated). HbA1c: 8.6% (Elevated). Total Cholesterol: 256 mg/dL (Elevated). Triglycerides: 220 mg/dL. Creatinine: 0.92 mg/dL (Normal).',
+              verified: true,
+              createdAt: new Date('2025-11-10').getTime(),
+            },
+            {
+              id: 'rep-demo-2',
+              patientId: patientData.id,
+              title: 'Quarterly Review Panel',
+              type: 'Lab Report',
+              date: '2026-03-05',
+              hospital: 'MHD Central Multispecialty Hospital',
+              doctor: 'Dr. Sarah Jenkins, MD',
+              note: 'Fasting Glucose: 134 mg/dL (Down from 172). HbA1c: 7.7% (Improved). Total Cholesterol: 198 mg/dL (Controlled). Triglycerides: 162 mg/dL. Creatinine: 0.90 mg/dL.',
+              verified: true,
+              createdAt: new Date('2026-03-05').getTime(),
+            },
+            {
+              id: 'rep-demo-3',
+              patientId: patientData.id,
+              title: 'Latest Annual Health Review Panel',
+              type: 'Lab Report',
+              date: '2026-09-14',
+              hospital: 'MHD Central Multispecialty Hospital',
+              doctor: 'Dr. Sarah Jenkins, MD',
+              note: 'Fasting Glucose: 104 mg/dL (Optimal control). HbA1c: 6.3% (Target achieved). Total Cholesterol: 176 mg/dL (Optimal protection). Triglycerides: 138 mg/dL. Creatinine: 0.89 mg/dL.',
+              verified: true,
+              createdAt: new Date('2026-09-14').getTime(),
+            },
+          ]
+        : reports || [];
+
+      const targetMeds = dataSource === 'demo' || (medicines || []).length === 0
+        ? [
+            {
+              id: 'med-demo-1',
+              patientId: patientData.id,
+              name: 'Metformin HCl',
+              dosage: '500 mg BD (Twice daily)',
+              startDate: '2025-11-10',
+              active: true,
+              prescribedBy: 'Dr. Sarah Jenkins, MD',
+              verified: true,
+              createdAt: new Date('2025-11-10').getTime(),
+            },
+            {
+              id: 'med-demo-2',
+              patientId: patientData.id,
+              name: 'Atorvastatin Calcium',
+              dosage: '10 mg OD (At bedtime)',
+              startDate: '2025-11-15',
+              active: true,
+              prescribedBy: 'Dr. Sarah Jenkins, MD',
+              verified: true,
+              createdAt: new Date('2025-11-15').getTime(),
+            },
+            {
+              id: 'med-demo-3',
+              patientId: patientData.id,
+              name: 'Amlodipine Besylate',
+              dosage: '5 mg OD (Morning)',
+              startDate: '2025-12-15',
+              active: true,
+              prescribedBy: 'Dr. Rajesh Nair, MD',
+              verified: true,
+              createdAt: new Date('2025-12-15').getTime(),
+            },
+          ]
+        : medicines || [];
+
       const res = await fetch('/api/ai/analyze-lab-reports', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          reports: reports || [],
-          medicines: medicines || [],
+          reports: targetReports,
+          medicines: targetMeds,
           cases: cases || [],
           cohortRecords,
           patient: {
@@ -252,134 +337,6 @@ export default function HealthTrendsTab({ patientData }: { patientData: MhdUser 
     }
   };
 
-  // Seed realistic multi-month clinical data if account has no history
-  const handleSeedClinicalData = async () => {
-    setSeeding(true);
-    try {
-      const dayMs = 86400000;
-      const now = Date.now();
-
-      // Seed 2 medicines
-      await addDoc(collection(db, 'medicines'), {
-        patientId: patientData.id,
-        name: 'Metformin HCl',
-        dosage: '500 mg BD (Twice daily)',
-        startDate: '2025-10-15',
-        active: true,
-        prescribedBy: 'Dr. Sarah Jenkins',
-        verified: true,
-        createdAt: now - 120 * dayMs,
-      });
-
-      await addDoc(collection(db, 'medicines'), {
-        patientId: patientData.id,
-        name: 'Atorvastatin',
-        dosage: '10 mg OD (Once daily at night)',
-        startDate: '2025-10-15',
-        active: true,
-        prescribedBy: 'Dr. Sarah Jenkins',
-        verified: true,
-        createdAt: now - 120 * dayMs,
-      });
-
-      // Seed 3 sequential lab reports across 4 months showing glycemic & lipid progression
-      await addDoc(collection(db, 'reports'), {
-        patientId: patientData.id,
-        patientName: patientData.name,
-        healthId: patientData.healthId || 'MHD-1001',
-        title: 'Initial Metabolic & Glycemic Profile',
-        type: 'Lab Report',
-        date: '2025-10-15',
-        hospital: 'MHD Central Hospital',
-        doctor: 'Dr. Sarah Jenkins',
-        note: 'Fasting Glucose: 168 mg/dL (Elevated). HbA1c: 7.9% (Elevated). Total Cholesterol: 242 mg/dL (Elevated). Triglycerides: 210 mg/dL. Creatinine: 0.9 mg/dL (Normal). Hemoglobin: 14.1 g/dL.',
-        verified: true,
-        uploadedBy: 'Central Laboratory',
-        createdAt: now - 120 * dayMs,
-      });
-
-      await addDoc(collection(db, 'reports'), {
-        patientId: patientData.id,
-        patientName: patientData.name,
-        healthId: patientData.healthId || 'MHD-1001',
-        title: 'Interim Follow-up Panel',
-        type: 'Lab Report',
-        date: '2025-12-20',
-        hospital: 'MHD Central Hospital',
-        doctor: 'Dr. Sarah Jenkins',
-        note: 'Fasting Glucose: 148 mg/dL (Decreased from 168). HbA1c: 7.3% (Down from 7.9). Total Cholesterol: 224 mg/dL. Triglycerides: 185 mg/dL. Creatinine: 0.9 mg/dL. Hemoglobin: 14.2 g/dL.',
-        verified: true,
-        uploadedBy: 'Central Laboratory',
-        createdAt: now - 55 * dayMs,
-      });
-
-      await addDoc(collection(db, 'reports'), {
-        patientId: patientData.id,
-        patientName: patientData.name,
-        healthId: patientData.healthId || 'MHD-1001',
-        title: 'Comprehensive Quarterly Evaluation',
-        type: 'Lab Report',
-        date: todayStr(),
-        hospital: 'MHD Central Hospital',
-        doctor: 'Dr. Sarah Jenkins',
-        note: 'Fasting Glucose: 132 mg/dL (Positive progress). HbA1c: 6.8% (Meaningful improvement). Total Cholesterol: 210 mg/dL. Triglycerides: 162 mg/dL. Creatinine: 0.9 mg/dL (Stable kidney filtration). Hemoglobin: 14.4 g/dL.',
-        verified: true,
-        uploadedBy: 'Central Laboratory',
-        createdAt: now,
-      });
-
-      // Seed clinical vitals
-      await addDoc(collection(db, 'vitals'), {
-        patientId: patientData.id,
-        date: '2025-10-15',
-        bp: '138/88',
-        temp: '98.4',
-        hr: '76',
-        wt: '78',
-        enteredBy: 'Nurse Station',
-        doctorName: 'Dr. Sarah Jenkins',
-        createdAt: now - 120 * dayMs,
-      });
-
-      await addDoc(collection(db, 'vitals'), {
-        patientId: patientData.id,
-        date: '2025-12-20',
-        bp: '132/84',
-        temp: '98.6',
-        hr: '74',
-        wt: '77',
-        enteredBy: 'Nurse Station',
-        doctorName: 'Dr. Sarah Jenkins',
-        createdAt: now - 55 * dayMs,
-      });
-
-      await addDoc(collection(db, 'vitals'), {
-        patientId: patientData.id,
-        date: todayStr(),
-        bp: '124/80',
-        temp: '98.4',
-        hr: '72',
-        wt: '76',
-        enteredBy: 'Nurse Station',
-        doctorName: 'Dr. Sarah Jenkins',
-        createdAt: now,
-      });
-
-      toast('Realistic clinical timeline loaded successfully');
-    } catch (err) {
-      console.error(err);
-      toast('Failed to load sample data', 'err');
-    } finally {
-      setSeeding(false);
-    }
-  };
-
-  const hasData =
-    biomarkerSeries.glucose.length > 0 ||
-    biomarkerSeries.hba1c.length > 0 ||
-    biomarkerSeries.sysBp.length > 0 ||
-    biomarkerSeries.cholesterol.length > 0;
-
   if (reports === null || medicines === null || vitals === null) {
     return (
       <div className="max-w-[1050px] mx-auto min-w-0 w-full">
@@ -390,12 +347,12 @@ export default function HealthTrendsTab({ patientData }: { patientData: MhdUser 
 
   return (
     <div className="max-w-[1050px] mx-auto space-y-4 sm:space-y-6 pb-8 sm:pb-12 min-w-0 w-full">
-      {/* Top Header with AI Correlation Action */}
+      {/* Top Header with AI Analytics Action */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 sm:p-6 rounded-2xl border border-slate-200/90 shadow-xs">
         <div>
           <PageHeader
             title="Health Trends & Graphs"
-            sub="Interactive charts of your blood glucose, HbA1c, blood pressure, cholesterol, and medication timelines."
+            sub="Interactive charts of your blood glucose, HbA1c, blood pressure, cholesterol, and individual medicine timelines."
           />
         </div>
 
@@ -410,7 +367,75 @@ export default function HealthTrendsTab({ patientData }: { patientData: MhdUser 
         </div>
       </div>
 
-      {/* Navigation View Switcher */}
+      {/* Data Source Mode Switcher: Demo Data vs Live Records */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50 p-2.5 sm:p-3 rounded-2xl border border-slate-200">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-slate-700 uppercase tracking-wider pl-1">Data Source:</span>
+          <div className="flex items-center gap-1 bg-slate-200/80 p-1 rounded-xl">
+            <button
+              onClick={() => setDataSource('demo')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                dataSource === 'demo'
+                  ? 'bg-amber-500 text-white shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <span>DEMO DATA (Simulated Trends)</span>
+            </button>
+            <button
+              onClick={() => setDataSource('live')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                dataSource === 'live'
+                  ? 'bg-white text-[#2a8eff] shadow-2xs font-bold'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <span>My Live Records</span>
+              {hasLiveBiomarkers && (
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+              )}
+            </button>
+          </div>
+        </div>
+
+        <div className="text-[11px] text-slate-500 pr-1">
+          {dataSource === 'demo' ? (
+            <span className="text-amber-800 font-medium">
+              Showing realistic simulated clinical dataset (Read-only demo)
+            </span>
+          ) : (
+            <span>Showing verified records from your patient profile</span>
+          )}
+        </div>
+      </div>
+
+      {/* Prominent Demo Data Banner when in Demo Mode */}
+      {dataSource === 'demo' && (
+        <div className="p-3.5 sm:p-4 rounded-2xl bg-amber-50/80 border border-amber-200/90 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-2xs">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-amber-500 text-white flex items-center justify-center shrink-0 font-mono font-bold text-xs shadow-2xs">
+              DEMO
+            </div>
+            <div>
+              <p className="font-bold text-amber-950 flex items-center gap-2">
+                <span>Realistic Demo-Only Health Analytics & Trajectories</span>
+                <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-amber-200/70 text-amber-900 border border-amber-300">Read-Only Simulation</span>
+              </p>
+              <p className="text-amber-800 text-[11px] mt-0.5">
+                Displaying realistic multi-month clinical response data for Glucose, HbA1c, Blood Pressure, and Cholesterol, plus separate medicine-wise treatment timelines. Never modifies Firebase, MongoDB, or real patient records.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => setDataSource('live')}
+            className="text-xs font-bold text-amber-900 hover:text-amber-950 hover:underline shrink-0"
+          >
+            Switch to Live Records →
+          </button>
+        </div>
+      )}
+
+      {/* Navigation View Switcher (Biomarkers vs Medicine-wise Graphs vs Vitals Log) */}
       <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl max-w-md">
         <button
           onClick={() => setActiveView('biomarkers')}
@@ -449,265 +474,427 @@ export default function HealthTrendsTab({ patientData }: { patientData: MhdUser 
         </button>
       </div>
 
-      {/* Empty State Banner with 1-Click Clinical Seeder */}
-      {!hasData && (
-        <div className="bg-surface border border-line rounded-2xl p-6 sm:p-10 text-center space-y-4 shadow-xs">
-          <EmptyState
-            icon={<Activity className="w-8 h-8 text-ghost mx-auto" strokeWidth={1.5} />}
-            title="No measurement history yet"
-            sub="When your hospital uploads laboratory panels or records doctor vitals, your interactive trends and medicine graphs will appear here."
-          />
-          <div className="pt-2">
-            <button
-              onClick={handleSeedClinicalData}
-              disabled={seeding}
-              className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-50 hover:bg-blue-100 text-[#1e3a8a] border border-blue-200 rounded-xl text-xs sm:text-sm font-semibold transition-colors disabled:opacity-50 cursor-pointer"
-            >
-              <PlusCircle className="w-4 h-4 text-[#2a8eff]" />
-              <span>{seeding ? 'Generating Sample Clinical Timeline…' : 'Load Sample Clinical History (Glucose, Lipids, BP)'}</span>
-            </button>
-          </div>
-        </div>
-      )}
+      {/* =========================================================
+          MODE 1: DEMO HEALTH GRAPHS (SIMULATION)
+          ========================================================= */}
+      {dataSource === 'demo' && (
+        <>
+          {/* VIEW 1: Core Biomarker Charts (Glucose, HbA1c, Blood Pressure, Cholesterol) */}
+          {activeView === 'biomarkers' && (
+            <div className="space-y-6">
+              {/* 1. Blood Glucose Chart */}
+              <HealthTrendsChart
+                title="Fasting Blood Glucose"
+                subtitle="Morning plasma glucose concentration (mg/dL) monitored across 9 months under Metformin therapy."
+                data={DEMO_GLUCOSE_DATA}
+                referenceRange={{ min: 70, max: 99, unit: 'mg/dL', label: 'Normal Fasting' }}
+                unit="mg/dL"
+                color="#2a8eff"
+                isDemoData={true}
+                milestones={[
+                  {
+                    date: '2025-11-10',
+                    timestamp: new Date('2025-11-10').getTime(),
+                    medicineName: 'Metformin HCl',
+                    dosage: '500mg OD',
+                    type: 'started',
+                    note: 'Initiated at 500mg once daily',
+                  },
+                  {
+                    date: '2026-03-05',
+                    timestamp: new Date('2026-03-05').getTime(),
+                    medicineName: 'Metformin HCl',
+                    dosage: '500mg BD',
+                    type: 'dose_change',
+                    note: 'Titrated to 500mg twice daily for optimal control',
+                  },
+                ]}
+              />
 
-      {/* VIEW 1: Core Biomarker Charts */}
-      {activeView === 'biomarkers' && hasData && (
-        <div className="space-y-6">
-          {/* Blood Glucose Chart */}
-          {biomarkerSeries.glucose.length > 0 && (
-            <HealthTrendsChart
-              title="Fasting Blood Glucose"
-              subtitle="Blood glucose concentration after fasting, tracked across laboratory tests."
-              data={biomarkerSeries.glucose}
-              referenceRange={{ min: 70, max: 99, unit: 'mg/dL' }}
-              unit="mg/dL"
-              color="#2a8eff"
-              milestones={medicineMilestones.filter((m) => m.medicineName.toLowerCase().includes('metformin'))}
-            />
-          )}
+              {/* 2. HbA1c Chart */}
+              <HealthTrendsChart
+                title="HbA1c (Glycated Hemoglobin)"
+                subtitle="Quarterly 3-month average glycemic exposure. Demonstrates reduction from 8.6% to 6.3%."
+                data={DEMO_HBA1C_DATA}
+                referenceRange={{ min: 4.0, max: 5.6, unit: '%', label: 'Healthy Target' }}
+                unit="%"
+                color="#8b5cf6"
+                isDemoData={true}
+                milestones={[
+                  {
+                    date: '2025-11-10',
+                    timestamp: new Date('2025-11-10').getTime(),
+                    medicineName: 'Metformin HCl',
+                    dosage: '500mg OD',
+                    type: 'started',
+                    note: 'Regimen started',
+                  },
+                ]}
+              />
 
-          {/* HbA1c Chart */}
-          {biomarkerSeries.hba1c.length > 0 && (
-            <HealthTrendsChart
-              title="HbA1c (Glycated Hemoglobin)"
-              subtitle="Average blood sugar exposure over 2 to 3 months."
-              data={biomarkerSeries.hba1c}
-              referenceRange={{ min: 4.0, max: 5.6, unit: '%' }}
-              unit="%"
-              color="#8b5cf6"
-              milestones={medicineMilestones.filter((m) => m.medicineName.toLowerCase().includes('metformin'))}
-            />
-          )}
+              {/* 3. Blood Pressure Dual-Series Chart (Systolic + Diastolic) */}
+              <HealthTrendsChart
+                title="Blood Pressure (Systolic & Diastolic)"
+                subtitle="Interactive dual-trajectory arterial pressure monitoring (mmHg) during clinical visits under Amlodipine 5mg."
+                data={DEMO_SYS_BP_DATA}
+                primaryLabel="Systolic BP"
+                unit="mmHg"
+                referenceRange={{ min: 90, max: 120, unit: 'mmHg', label: 'Systolic Target' }}
+                color="#ef4444"
+                secondaryData={DEMO_DIA_BP_DATA}
+                secondaryLabel="Diastolic BP"
+                secondaryColor="#06b6d4"
+                secondaryUnit="mmHg"
+                secondaryReferenceRange={{ min: 60, max: 80, unit: 'mmHg', label: 'Diastolic Target' }}
+                isDemoData={true}
+                milestones={[
+                  {
+                    date: '2025-12-15',
+                    timestamp: new Date('2025-12-15').getTime(),
+                    medicineName: 'Amlodipine',
+                    dosage: '5mg OD',
+                    type: 'started',
+                    note: 'Calcium channel blocker initiated',
+                  },
+                ]}
+              />
 
-          {/* Blood Pressure Chart (Systolic) */}
-          {biomarkerSeries.sysBp.length > 0 && (
-            <HealthTrendsChart
-              title="Systolic Blood Pressure"
-              subtitle="Pressure during heart contractions, recorded during clinical visits."
-              data={biomarkerSeries.sysBp}
-              referenceRange={{ min: 90, max: 120, unit: 'mmHg' }}
-              unit="mmHg"
-              color="#ef4444"
-            />
-          )}
+              {/* 4. Total Cholesterol Chart */}
+              <HealthTrendsChart
+                title="Total Serum Cholesterol"
+                subtitle="Circulating blood lipids (mg/dL) monitored for atherosclerotic plaque prevention under Atorvastatin 10mg."
+                data={DEMO_CHOLESTEROL_DATA}
+                referenceRange={{ min: 125, max: 200, unit: 'mg/dL', label: 'Desirable Target' }}
+                unit="mg/dL"
+                color="#f59e0b"
+                isDemoData={true}
+                milestones={[
+                  {
+                    date: '2025-11-15',
+                    timestamp: new Date('2025-11-15').getTime(),
+                    medicineName: 'Atorvastatin',
+                    dosage: '10mg OD',
+                    type: 'started',
+                    note: 'Statin started at bedtime',
+                  },
+                ]}
+              />
 
-          {/* Total Cholesterol Chart */}
-          {biomarkerSeries.cholesterol.length > 0 && (
-            <HealthTrendsChart
-              title="Total Cholesterol"
-              subtitle="Circulating blood lipids, monitored for cardiovascular wellness."
-              data={biomarkerSeries.cholesterol}
-              referenceRange={{ min: 125, max: 200, unit: 'mg/dL' }}
-              unit="mg/dL"
-              color="#f59e0b"
-              milestones={medicineMilestones.filter((m) => m.medicineName.toLowerCase().includes('statin'))}
-            />
-          )}
+              {/* 5. Serum Triglycerides Chart */}
+              <HealthTrendsChart
+                title="Serum Triglycerides"
+                subtitle="Stored dietary fats circulating in bloodstream (mg/dL). Normal target is <150 mg/dL."
+                data={DEMO_TRIGLYCERIDES_DATA}
+                referenceRange={{ min: 40, max: 150, unit: 'mg/dL', label: 'Normal' }}
+                unit="mg/dL"
+                color="#f97316"
+                isDemoData={true}
+              />
 
-          {/* Triglycerides Chart */}
-          {biomarkerSeries.triglycerides.length > 0 && (
-            <HealthTrendsChart
-              title="Triglycerides"
-              subtitle="Stored dietary fats circulating in the bloodstream."
-              data={biomarkerSeries.triglycerides}
-              referenceRange={{ min: 40, max: 150, unit: 'mg/dL' }}
-              unit="mg/dL"
-              color="#f97316"
-            />
-          )}
-
-          {/* Kidney Function / Creatinine Chart */}
-          {biomarkerSeries.creatinine.length > 0 && (
-            <HealthTrendsChart
-              title="Serum Creatinine"
-              subtitle="Waste filtration metric indicating kidney clearance function."
-              data={biomarkerSeries.creatinine}
-              referenceRange={{ min: 0.6, max: 1.2, unit: 'mg/dL' }}
-              unit="mg/dL"
-              color="#06b6d4"
-            />
-          )}
-        </div>
-      )}
-
-      {/* VIEW 2: Medicine-wise Dedicated Graphs */}
-      {activeView === 'meds' && (
-        <div className="space-y-6">
-          <div className="p-4 bg-blue-50/70 border border-blue-100 rounded-2xl flex items-start gap-3">
-            <Info className="w-5 h-5 text-[#2a8eff] shrink-0 mt-0.5" />
-            <div className="text-xs text-slate-700 space-y-1">
-              <p className="font-bold text-[#1e3a8a]">Medicine-Correlated Timeline Graphs</p>
-              <p>
-                Each section pairs your prescribed medicine with its relevant laboratory markers recorded before,
-                during, and after treatment.
-              </p>
-              <p className="text-[11px] text-slate-500 italic">
-                *Clinical Evidence Reminder: Correlation does not claim direct causation. Many lifestyle,
-                dietary, and metabolic variables influence lab readings alongside prescribed therapies.
-              </p>
+              {/* 6. Kidney Clearance Safety (Creatinine) */}
+              <HealthTrendsChart
+                title="Serum Creatinine (Renal Clearance Safety)"
+                subtitle="Kidney filtration marker (mg/dL) verifying sustained renal safety during long-term Metformin therapy."
+                data={DEMO_CREATININE_DATA}
+                referenceRange={{ min: 0.6, max: 1.2, unit: 'mg/dL', label: 'Optimal Clearance' }}
+                unit="mg/dL"
+                color="#10b981"
+                isDemoData={true}
+              />
             </div>
-          </div>
+          )}
 
-          {(medicines || []).length === 0 ? (
-            <div className="p-8 text-center bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-              <Pill className="w-8 h-8 text-slate-400 mx-auto" />
-              <p className="text-sm font-semibold text-slate-700">No prescribed medicines on record yet.</p>
-              <p className="text-xs text-slate-500 max-w-md mx-auto">
-                When a doctor prescribes a medicine in your case records, a dedicated tracking graph will be generated here automatically.
-              </p>
-              <button
-                onClick={handleSeedClinicalData}
-                disabled={seeding}
-                className="px-4 py-2 bg-white border border-slate-200 text-[#1e3a8a] text-xs font-semibold rounded-xl hover:bg-slate-100"
-              >
-                Load Sample Prescriptions & Labs
-              </button>
-            </div>
-          ) : (
-            (medicines || []).map((med, idx) => {
-              const medLower = med.name.toLowerCase();
-              const isDiabetes =
-                medLower.includes('metformin') || medLower.includes('glimepiride') || medLower.includes('insulin');
-              const isStatin =
-                medLower.includes('statin') || medLower.includes('atorvastatin') || medLower.includes('fenofibrate');
-              const isBp =
-                medLower.includes('amlodipine') ||
-                medLower.includes('telmisartan') ||
-                medLower.includes('enalapril') ||
-                medLower.includes('losartan');
+          {/* VIEW 2: Separate Dedicated Graphs for Each Medicine */}
+          {activeView === 'meds' && (
+            <div className="space-y-6">
+              <div className="p-4 bg-blue-50/70 border border-blue-100 rounded-2xl flex items-start gap-3">
+                <Info className="w-5 h-5 text-[#2a8eff] shrink-0 mt-0.5" />
+                <div className="text-xs text-slate-700 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <p className="font-bold text-[#1e3a8a]">Separate Medication-Wise Treatment Graphs (DEMO DATA)</p>
+                    <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">
+                      DEMO DATA
+                    </span>
+                  </div>
+                  <p>
+                    Each individual medicine is paired with its full treatment timeline, dosing titration milestones,
+                    and correlated biomarker response curves over 9 months of simulated clinical surveillance.
+                  </p>
+                  <p className="text-[11px] text-slate-500 italic">
+                    *Clinical Evidence Reminder: Laboratory values vary naturally with diet, exercise, and hydration alongside prescribed therapies.
+                  </p>
+                </div>
+              </div>
 
-              // Select correlated lab data points
-              const correlatedData: DataPoint[] = isDiabetes
-                ? biomarkerSeries.glucose.length > 0
-                  ? biomarkerSeries.glucose
-                  : biomarkerSeries.hba1c
-                : isStatin
-                ? biomarkerSeries.cholesterol.length > 0
-                  ? biomarkerSeries.cholesterol
-                  : biomarkerSeries.triglycerides
-                : isBp
-                ? biomarkerSeries.sysBp
-                : biomarkerSeries.glucose;
+              {DEMO_MEDICINE_PROFILES.map((medProfile) => (
+                <div
+                  key={medProfile.id}
+                  className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-6 shadow-xs space-y-4"
+                >
+                  {/* Medicine Profile Header & Status */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="p-2 bg-blue-50 rounded-xl text-[#2a8eff]">
+                          <Pill className="w-4 h-4" />
+                        </div>
+                        <h4 className="text-base sm:text-lg font-bold text-[#1e3a8a]">
+                          {medProfile.name}
+                        </h4>
+                        <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">
+                          DEMO DATA
+                        </span>
+                        <span className="text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                          {medProfile.efficacySummary.clinicalStatus}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600">
+                        <strong>Dosage:</strong> {medProfile.dosage} · <strong>Timing:</strong> {medProfile.timing}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Prescribed by: {medProfile.prescribedBy} ({medProfile.doctorSpecialty}) · {medProfile.hospital}
+                      </p>
+                    </div>
 
-              const correlatedUnit = isDiabetes
-                ? biomarkerSeries.glucose.length > 0
-                  ? 'mg/dL'
-                  : '%'
-                : isStatin
-                ? 'mg/dL'
-                : isBp
-                ? 'mmHg'
-                : 'units';
+                    <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80">
+                      <div>
+                        <p className="text-[10px] uppercase font-bold text-slate-400">Adherence Rate</p>
+                        <p className="text-sm font-bold text-[#1e3a8a]">{medProfile.efficacySummary.adherenceRate}%</p>
+                      </div>
+                      <div className="w-8 h-8 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-xs border border-emerald-200">
+                        ✓
+                      </div>
+                    </div>
+                  </div>
 
-              const correlatedRange: ReferenceRange | undefined = isDiabetes
-                ? biomarkerSeries.glucose.length > 0
-                  ? { min: 70, max: 99, unit: 'mg/dL' }
-                  : { min: 4.0, max: 5.6, unit: '%' }
-                : isStatin
-                ? { min: 125, max: 200, unit: 'mg/dL' }
-                : isBp
-                ? { min: 90, max: 120, unit: 'mmHg' }
-                : undefined;
+                  {/* Treatment Timeline Milestone Strip */}
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/70 space-y-2">
+                    <p className="text-[11px] font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-[#2a8eff]" />
+                      <span>Treatment Timeline & Dosing History</span>
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                      {medProfile.history.map((h, hIdx) => (
+                        <div key={hIdx} className="p-2 bg-white rounded-lg border border-slate-200/60 space-y-0.5">
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="font-bold text-[#1e3a8a]">{fmtD(h.date)}</span>
+                            <span className="font-mono text-slate-500">{h.dosage}</span>
+                          </div>
+                          <p className="text-[11px] text-slate-600">{h.note}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
 
-              return (
-                <div key={`${med.id}-${idx}`} className="space-y-3">
+                  {/* Correlated Biomarker Chart */}
                   <HealthTrendsChart
-                    title={`Treatment Response: ${med.name}`}
-                    subtitle={`Tracking correlated lab indicators alongside prescription of ${med.dosage}.`}
-                    data={correlatedData}
-                    unit={correlatedUnit}
-                    referenceRange={correlatedRange}
-                    color={isDiabetes ? '#2a8eff' : isStatin ? '#f59e0b' : '#10b981'}
+                    title={medProfile.correlatedBiomarker.title}
+                    subtitle={medProfile.correlatedBiomarker.subtitle}
+                    data={medProfile.correlatedBiomarker.data}
+                    referenceRange={medProfile.correlatedBiomarker.referenceRange}
+                    unit={medProfile.correlatedBiomarker.unit}
+                    color={medProfile.correlatedBiomarker.color}
+                    isDemoData={true}
+                    milestones={medProfile.milestones}
                     medicineTimeline={{
-                      name: med.name,
-                      dosage: med.dosage,
-                      startDate: med.startDate || todayStr(),
-                      active: med.active !== false,
-                      history: [
-                        {
-                          date: med.startDate || todayStr(),
-                          dosage: med.dosage,
-                          note: `Prescribed by ${med.prescribedBy || 'Treating Physician'}`,
-                        },
-                      ],
+                      name: medProfile.name,
+                      dosage: medProfile.dosage,
+                      startDate: medProfile.startDate,
+                      active: medProfile.active,
+                      history: medProfile.history,
                     }}
                   />
+
+                  {/* Secondary Correlated Chart if present (e.g. HbA1c for Metformin, Triglycerides for Atorvastatin) */}
+                  {medProfile.secondaryBiomarker && (
+                    <HealthTrendsChart
+                      title={medProfile.secondaryBiomarker.title}
+                      subtitle={`Secondary biomarker evaluated alongside ${medProfile.name} prescription.`}
+                      data={medProfile.secondaryBiomarker.data}
+                      referenceRange={medProfile.secondaryBiomarker.referenceRange}
+                      unit={medProfile.secondaryBiomarker.unit}
+                      color={medProfile.secondaryBiomarker.color}
+                      isDemoData={true}
+                    />
+                  )}
+
+                  {/* Doctor Review & Outcome Notes */}
+                  <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-200/70 text-xs space-y-1">
+                    <div className="flex items-center justify-between text-[#1e3a8a] font-bold">
+                      <span>Attending Physician Review & Assessment</span>
+                      <span className="text-[11px] font-normal text-slate-500">
+                        Net Impact: {medProfile.efficacySummary.netChange} ({medProfile.efficacySummary.percentageImprovement})
+                      </span>
+                    </div>
+                    <p className="text-slate-700 leading-relaxed">
+                      "{medProfile.efficacySummary.doctorReviewNote}"
+                    </p>
+                  </div>
                 </div>
-              );
-            })
+              ))}
+            </div>
           )}
-        </div>
+
+          {/* VIEW 3: Chronological Clinical Vitals Log Table */}
+          {activeView === 'vitals' && (
+            <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs overflow-hidden space-y-2">
+              <div className="px-4 sm:px-6 py-3.5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <h4 className="text-xs sm:text-sm font-bold text-[#1e3a8a] uppercase tracking-wider">
+                    Chronological Clinical Vitals Log (DEMO DATA)
+                  </h4>
+                  <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">
+                    DEMO DATA
+                  </span>
+                </div>
+                <span className="text-xs text-slate-500">{DEMO_VITALS_LOG.length} Clinical Visits Recorded</span>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse min-w-[650px]">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200/80 text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      <th className="px-4 py-3">Date & Time</th>
+                      <th className="px-4 py-3">Blood Pressure</th>
+                      <th className="px-4 py-3">Heart Rate</th>
+                      <th className="px-4 py-3">Temp (°F)</th>
+                      <th className="px-4 py-3">Weight</th>
+                      <th className="px-4 py-3">SpO₂</th>
+                      <th className="px-4 py-3">Clinical Assessment</th>
+                      <th className="px-4 py-3">Attending Doctor</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-xs sm:text-[13px]">
+                    {DEMO_VITALS_LOG.map((v, i) => (
+                      <tr key={v.id || i} className="hover:bg-slate-50/70 transition-colors">
+                        <td className="px-4 py-3 font-medium text-slate-600 whitespace-nowrap">
+                          {fmtD(v.date)} · <span className="text-slate-400 text-[11px]">{v.time}</span>
+                        </td>
+                        <td className="px-4 py-3 font-bold text-slate-900 whitespace-nowrap">
+                          {v.systolic}/{v.diastolic} mmHg
+                        </td>
+                        <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{v.heartRate} bpm</td>
+                        <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{v.temperature}°F</td>
+                        <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{v.weightKg} kg</td>
+                        <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{v.spo2}%</td>
+                        <td className="px-4 py-3 text-slate-600 max-w-[220px] truncate" title={v.notes}>
+                          {v.notes}
+                        </td>
+                        <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{v.doctorName}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
-      {/* VIEW 3: Raw Clinical Vitals Log Table */}
-      {activeView === 'vitals' && (
-        <div className="bg-white border border-slate-200/90 rounded-2xl shadow-xs overflow-hidden">
-          <div className="px-4 sm:px-6 py-3.5 border-b border-slate-100 flex items-center justify-between">
-            <h4 className="text-xs sm:text-sm font-bold text-[#1e3a8a] uppercase tracking-wider">
-              Chronological Clinical Vitals Log
-            </h4>
-            <span className="text-xs text-slate-500">{(vitals || []).length} Recorded Visits</span>
-          </div>
+      {/* =========================================================
+          MODE 2: LIVE PERSONAL PATIENT RECORDS
+          ========================================================= */}
+      {dataSource === 'live' && (
+        <>
+          {!hasLiveBiomarkers ? (
+            <div className="bg-surface border border-line rounded-2xl p-6 sm:p-10 text-center space-y-4 shadow-xs">
+              <EmptyState
+                icon={<Activity className="w-8 h-8 text-ghost mx-auto" strokeWidth={1.5} />}
+                title="No live laboratory reports recorded yet"
+                sub="Your hospital has not uploaded verified lab panels or vitals for this account yet. You can explore the realistic interactive demonstration graphs anytime."
+              />
+              <div className="pt-2">
+                <button
+                  onClick={() => setDataSource('demo')}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs sm:text-sm font-bold shadow-sm transition-all cursor-pointer"
+                >
+                  <TrendingUp className="w-4 h-4" />
+                  <span>View Realistic Demo Health Graphs (Simulated)</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {/* Blood Glucose Chart */}
+              {liveBiomarkerSeries.glucose.length > 0 && (
+                <HealthTrendsChart
+                  title="Fasting Blood Glucose"
+                  subtitle="Blood glucose concentration after fasting, tracked across your verified laboratory tests."
+                  data={liveBiomarkerSeries.glucose}
+                  referenceRange={{ min: 70, max: 99, unit: 'mg/dL' }}
+                  unit="mg/dL"
+                  color="#2a8eff"
+                />
+              )}
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse min-w-[550px]">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-200/80 text-[10px] sm:text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                  <th className="px-4 py-3">Date</th>
-                  <th className="px-4 py-3">Blood Pressure</th>
-                  <th className="px-4 py-3">Pulse / HR</th>
-                  <th className="px-4 py-3">Temp (°F)</th>
-                  <th className="px-4 py-3">Weight (kg)</th>
-                  <th className="px-4 py-3">Symptoms / Notes</th>
-                  <th className="px-4 py-3">Recorded By</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-xs sm:text-[13px]">
-                {(vitals || []).length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-slate-400">
-                      No vitals on record yet.
-                    </td>
-                  </tr>
-                ) : (
-                  [...(vitals || [])]
-                    .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
-                    .map((v, i) => (
-                      <tr key={`${v.id}-${i}`} className="hover:bg-slate-50/70 transition-colors">
-                        <td className="px-4 py-3 font-medium text-slate-600 whitespace-nowrap">{fmtD(v.date)}</td>
-                        <td className="px-4 py-3 font-bold text-slate-900 whitespace-nowrap">{v.bp || '—'}</td>
-                        <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{v.hr ? `${v.hr} bpm` : '—'}</td>
-                        <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{v.temp || '—'}</td>
-                        <td className="px-4 py-3 text-slate-700 whitespace-nowrap">{v.wt ? `${v.wt} kg` : '—'}</td>
-                        <td className="px-4 py-3 text-slate-500 max-w-[200px] truncate">{v.sym || '—'}</td>
-                        <td className="px-4 py-3 text-slate-500 whitespace-nowrap">{v.doctorName || v.enteredBy || 'Hospital'}</td>
-                      </tr>
-                    ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+              {/* HbA1c Chart */}
+              {liveBiomarkerSeries.hba1c.length > 0 && (
+                <HealthTrendsChart
+                  title="HbA1c (Glycated Hemoglobin)"
+                  subtitle="Average blood sugar exposure over 2 to 3 months."
+                  data={liveBiomarkerSeries.hba1c}
+                  referenceRange={{ min: 4.0, max: 5.6, unit: '%' }}
+                  unit="%"
+                  color="#8b5cf6"
+                />
+              )}
+
+              {/* Blood Pressure Chart */}
+              {liveBiomarkerSeries.sysBp.length > 0 && (
+                <HealthTrendsChart
+                  title="Blood Pressure (Systolic & Diastolic)"
+                  subtitle="Pressure recorded during clinical visits."
+                  data={liveBiomarkerSeries.sysBp}
+                  primaryLabel="Systolic BP"
+                  unit="mmHg"
+                  referenceRange={{ min: 90, max: 120, unit: 'mmHg' }}
+                  color="#ef4444"
+                  secondaryData={liveBiomarkerSeries.diaBp}
+                  secondaryLabel="Diastolic BP"
+                  secondaryColor="#06b6d4"
+                  secondaryUnit="mmHg"
+                  secondaryReferenceRange={{ min: 60, max: 80, unit: 'mmHg' }}
+                />
+              )}
+
+              {/* Total Cholesterol Chart */}
+              {liveBiomarkerSeries.cholesterol.length > 0 && (
+                <HealthTrendsChart
+                  title="Total Cholesterol"
+                  subtitle="Circulating blood lipids, monitored for cardiovascular wellness."
+                  data={liveBiomarkerSeries.cholesterol}
+                  referenceRange={{ min: 125, max: 200, unit: 'mg/dL' }}
+                  unit="mg/dL"
+                  color="#f59e0b"
+                />
+              )}
+
+              {/* Triglycerides Chart */}
+              {liveBiomarkerSeries.triglycerides.length > 0 && (
+                <HealthTrendsChart
+                  title="Triglycerides"
+                  subtitle="Stored dietary fats circulating in the bloodstream."
+                  data={liveBiomarkerSeries.triglycerides}
+                  referenceRange={{ min: 40, max: 150, unit: 'mg/dL' }}
+                  unit="mg/dL"
+                  color="#f97316"
+                />
+              )}
+
+              {/* Serum Creatinine Chart */}
+              {liveBiomarkerSeries.creatinine.length > 0 && (
+                <HealthTrendsChart
+                  title="Serum Creatinine"
+                  subtitle="Waste filtration metric indicating kidney clearance function."
+                  data={liveBiomarkerSeries.creatinine}
+                  referenceRange={{ min: 0.6, max: 1.2, unit: 'mg/dL' }}
+                  unit="mg/dL"
+                  color="#06b6d4"
+                />
+              )}
+            </div>
+          )}
+        </>
       )}
 
       {/* AI Lab & Medication Analysis Modal */}
